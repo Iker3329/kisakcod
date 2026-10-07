@@ -583,8 +583,7 @@
         <div class="credit-line"><span data-i18n="modded">Modded by:</span> Yourlosingblood</div>
         <div class="credit-line"><span data-i18n="ported">Ported by:</span> slqnt</div>
         <div class="credit-line"><span data-i18n="files">Files provided by</span> Viet guy but yeah/ricefarmer</div>
-        <div class="credit-line"><span data-i18n="mods">Mod/Map importer by</span> Iker3329</div>
-        <div class="credit-line"><a href="https://github.com/Iker3329/kisakcod" target="_blank" rel="noopener">GitHub Repo</a></div>
+        <div class="credit-line"><a href="https://github.com/linkawaken1979-alt/kisakcod" target="_blank" rel="noopener">GitHub Repo</a></div>
     </div>
 
     <div id="installer-panel">
@@ -4584,12 +4583,40 @@
                 return path + "?v=creditsmute1";
             },
 
-            kisakLanUrl:
-                ("https:" === location.protocol
-                    ? "wss://"
-                    : "ws://") +
-                location.host +
-                "/lan",
+            // Default multiplayer relay is the official one hosted by slqnt.
+            // Users can still override via localStorage key kisak_relays_v1
+            // (same store the original multiplayer page used).
+            kisakLanUrl: (function () {
+                const OFFICIAL =
+                    "wss://mw.slqnt.dev/lan?v=1";
+                let base = OFFICIAL;
+                try {
+                    const raw = localStorage.getItem("kisak_relays_v1");
+                    if (raw) {
+                        const store = JSON.parse(raw);
+                        const selected =
+                            store && typeof store.selected === "string"
+                                ? store.selected.trim()
+                                : "";
+                        if (
+                            selected &&
+                            /^wss?:\/\//i.test(selected)
+                        ) {
+                            base = selected;
+                        }
+                    }
+                } catch (e) { }
+                // Append joinCode when present (same as original mp page).
+                try {
+                    const jc = new URLSearchParams(location.search)
+                        .get("joinCode");
+                    if (jc) {
+                        base += (base.indexOf("?") >= 0 ? "&" : "?") +
+                            "joinCode=" + encodeURIComponent(jc);
+                    }
+                } catch (e) { }
+                return base;
+            })(),
 
             print: console.log,
 
