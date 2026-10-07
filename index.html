@@ -10972,24 +10972,26 @@
                     return;
                 }
 
-                // Also ensure mods/mp_bots exists and dual-write maps there.
-                // Join checks look under the active fs_game path; hosts that
-                // run the bots mod require files at mods/mp_bots/<name>.ff.
-                await ensureOPFSDirectory(cod4, "mods/mp_bots");
+                // Write each imported map to:
+                //   1) zone/<lang>/  — normal zone layout
+                //   2) main/         — where the updated webport resolves
+                //                      custom / mod-referenced maps
+                // Only the files being imported are copied (no bulk mirror).
+                await ensureOPFSDirectory(cod4, "main");
 
                 let written = 0;
                 for (const item of files) {
                     const file = await item.handle.getFile();
                     const bytes = new Uint8Array(await file.arrayBuffer());
-                    // Flatten into zone/<lang>/ using the basename so the
-                    // engine finds them the same way stock maps are laid out.
-                    const dest = zonePrefix + "/" + item.name;
-                    await writeBytesToOPFS(cod4, dest, bytes);
-                    // Dual-write into the bots mod folder for multiplayer joins.
-                    const modDest = "mods/mp_bots/" + item.name;
-                    await writeBytesToOPFS(cod4, modDest, bytes);
+
+                    const zoneDest = zonePrefix + "/" + item.name;
+                    await writeBytesToOPFS(cod4, zoneDest, bytes);
+
+                    const mainDest = "main/" + item.name;
+                    await writeBytesToOPFS(cod4, mainDest, bytes);
+
                     log(
-                        "  + " + dest + " + " + modDest + " (" +
+                        "  + " + zoneDest + " + " + mainDest + " (" +
                         bytes.byteLength + " bytes)  [from " + item.rel + "]"
                     );
                     written += 1;
@@ -10997,11 +10999,11 @@
 
                 status(
                     "Imported " + written + " map file(s) into " +
-                    zonePrefix + " and mods/mp_bots/. Existing other files kept."
+                    zonePrefix + " and main/. Existing other files kept."
                 );
                 log(
                     "Import custom maps finished: " + written +
-                    " file(s) into " + zonePrefix + " and mods/mp_bots/"
+                    " file(s) into " + zonePrefix + " and main/"
                 );
 
             } catch (err) {
