@@ -16,8 +16,22 @@
     <!-- Launch-speed: hint the engine payload early without
          executing it. The JS still only runs when we inject it
          (idle after first paint, or synchronously on Play). -->
-    <link rel="preload" href="kisakcod-sp.js" as="script">
-    <link rel="preload" href="kisakcod-sp.wasm?v=creditsmute1" as="fetch" type="application/wasm" crossorigin="anonymous">
+    <script>
+        // Conditional preload based on mode (runs before body scripts)
+        (function() {
+            const p = new URLSearchParams(location.search);
+            const mp = p.get("mode") === "mp" || p.has("mp") || p.has("joinCode");
+            const js  = mp ? "mp/kisakcod-mp.js"  : "kisakcod-sp.js";
+            const wasm = mp ? "mp/kisakcod-mp.wasm" : "kisakcod-sp.wasm";
+            const l1 = document.createElement("link");
+            l1.rel = "preload"; l1.href = js; l1.as = "script";
+            document.head.appendChild(l1);
+            const l2 = document.createElement("link");
+            l2.rel = "preload"; l2.href = wasm + "?v=creditsmute1"; l2.as = "fetch";
+            l2.type = "application/wasm"; l2.crossOrigin = "anonymous";
+            document.head.appendChild(l2);
+        })();
+    </script>
 
     <style>
         @font-face {
@@ -569,7 +583,8 @@
         <div class="credit-line"><span data-i18n="modded">Modded by:</span> Yourlosingblood</div>
         <div class="credit-line"><span data-i18n="ported">Ported by:</span> slqnt</div>
         <div class="credit-line"><span data-i18n="files">Files provided by</span> Viet guy but yeah/ricefarmer</div>
-        <div class="credit-line"><a href="https://github.com/linkawaken1979-alt/kisakcod" target="_blank" rel="noopener">GitHub Repo</a></div>
+        <div class="credit-line"><span data-i18n="mods">Mod/Map importer by</span> Iker3329</div>
+        <div class="credit-line"><a href="https://github.com/Iker3329/kisakcod" target="_blank" rel="noopener">GitHub Repo</a></div>
     </div>
 
     <div id="installer-panel">
@@ -626,6 +641,14 @@
 
             <button id="language-pack-button" type="button" data-i18n="installPack" hidden>
                 Install language pack
+            </button>
+
+            <button id="import-mods-button" type="button">
+                Import Mods
+            </button>
+
+            <button id="import-maps-button" type="button">
+                Import Custom Maps
             </button>
 
             <input id="upload-save-input" type="file" accept=".dat,.zip" hidden>
@@ -709,6 +732,23 @@
 
     <script>
         "use strict";
+
+        /* ============================================================
+           MODE DETECTION (singleplayer vs multiplayer)
+           One HTML serves both. Use ?mode=mp or the Multiplayer button
+           to boot the multiplayer engine instead of the singleplayer one.
+           ============================================================ */
+        const urlParams = new URLSearchParams(location.search);
+        const isMultiplayerMode = urlParams.get("mode") === "mp" ||
+                                  urlParams.has("mp") ||
+                                  urlParams.has("joinCode");
+
+        const ENGINE_JS  = isMultiplayerMode ? "mp/kisakcod-mp.js"  : "kisakcod-sp.js";
+        const ENGINE_WASM = isMultiplayerMode ? "mp/kisakcod-mp.wasm" : "kisakcod-sp.wasm";
+
+        if (isMultiplayerMode) {
+            document.title = "kisakcod webport — Multiplayer";
+        }
 
         /* ============================================================
            OPFS SYNC-ACCESS POLYFILL
@@ -4535,8 +4575,14 @@
 
             arguments: [],
 
-            locateFile: path =>
-                path + "?v=creditsmute1",
+            locateFile: path => {
+                // When the glue asks for the .wasm, hand it the correct
+                // build for the current mode.
+                if (path.endsWith(".wasm") || path.includes("kisakcod-")) {
+                    return ENGINE_WASM + "?v=creditsmute1";
+                }
+                return path + "?v=creditsmute1";
+            },
 
             kisakLanUrl:
                 ("https:" === location.protocol
@@ -10569,6 +10615,360 @@
         }
 
 
+
+        /* ============================================================
+           IMPORT MODS / CUSTOM MAPS
+           Let the user pick a local folder and copy files into the
+           existing /cod4 OPFS tree without wiping anything already there.
+           ============================================================ */
+
+        const importModsButton =
+            document.getElementById("import-mods-button");
+
+        const importMapsButton =
+            document.getElementById("import-maps-button");
+
+        let importBusy = false;
+
+        function setImportBusy(busy) {
+            importBusy = busy;
+            if (importModsButton) importModsButton.disabled = busy;
+            if (importMapsButton) importMapsButton.disabled = busy;
+        }
+
+        async function writeBytesToOPFS(root, path, bytes) {
+            const parent = await getOPFSParent(root, path);
+            const file = await parent.directory.getFileHandle(
+                parent.filename,
+                { create: true }
+            );
+            const writable = await file.createWritable();
+            try {
+                await writable.write(bytes);
+                await writable.close();
+            } catch (err) {
+                try { await writable.abort(); } catch { }
+                throw err;
+            }
+        }
+
+        /**
+         * Recursively copy every file under srcDir into destRoot under
+         * destPrefix (e.g. "mods/my_mod"). Existing files with the same
+         * path are overwritten; nothing else is deleted.
+         */
+        async function copyDirectoryIntoOPFS(
+            srcDir,
+            destRoot,
+            destPrefix,
+            onFile
+        ) {
+            let count = 0;
+            for await (const [name, handle] of srcDir.entries()) {
+                const rel = destPrefix ? destPrefix + "/" + name : name;
+                if (handle.kind === "directory") {
+                    await ensureOPFSDirectory(destRoot, rel);
+                    count += await copyDirectoryIntoOPFS(
+                        handle,
+                        destRoot,
+                        rel,
+                        onFile
+                    );
+                } else {
+                    const file = await handle.getFile();
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    await writeBytesToOPFS(destRoot, rel, bytes);
+                    count += 1;
+                    if (onFile) onFile(rel, bytes.byteLength);
+                }
+            }
+            return count;
+        }
+
+        function looksLikeModFolder(entries) {
+            // entries: array of [name, handle]
+            const lowerNames = entries.map(([n]) => n.toLowerCase());
+            const hasGameFile = lowerNames.some(n =>
+                n.endsWith(".iwd") ||
+                n.endsWith(".ff") ||
+                n.endsWith(".gsc") ||
+                n.endsWith(".csv")
+            );
+            const hasModDirs = lowerNames.some(n =>
+                n === "maps" ||
+                n === "images" ||
+                n === "sound" ||
+                n === "materials" ||
+                n === "mp" ||
+                n === "ui_mp" ||
+                n === "levelshots" ||
+                n === "scriptdata"
+            );
+            return hasGameFile || hasModDirs;
+        }
+
+        async function importModsFromFolder() {
+            if (importBusy) return;
+
+            if (typeof window.showDirectoryPicker !== "function") {
+                status(
+                    "This browser does not support folder selection " +
+                    "(showDirectoryPicker). Try Chrome/Edge/Chromium."
+                );
+                return;
+            }
+
+            if (!await hasInstalledGame()) {
+                status("Install the game first before importing mods.");
+                return;
+            }
+
+            let dirHandle;
+            try {
+                dirHandle = await window.showDirectoryPicker({
+                    id: "kisak-import-mods",
+                    mode: "read"
+                });
+            } catch (err) {
+                if (err && err.name === "AbortError") return;
+                status("Could not open folder: " + (err?.message || err));
+                return;
+            }
+
+            setImportBusy(true);
+
+            try {
+                status("Importing mods...");
+                log("Importing mods from folder: " + dirHandle.name);
+
+                const root = await getOPFSRoot();
+                const cod4 = await root.getDirectoryHandle("cod4");
+
+                // Ensure mods/ exists without touching its contents.
+                await ensureOPFSDirectory(cod4, "mods");
+
+                const topEntries = [];
+                for await (const entry of dirHandle.entries()) {
+                    topEntries.push(entry);
+                }
+
+                let totalFiles = 0;
+                let modsImported = 0;
+
+                const report = (rel, size) => {
+                    log("  + " + rel + " (" + size + " bytes)");
+                };
+
+                if (looksLikeModFolder(topEntries)) {
+                    // Selected folder IS the mod.
+                    const modName = dirHandle.name;
+                    log("Treating selected folder as single mod: " + modName);
+                    totalFiles = await copyDirectoryIntoOPFS(
+                        dirHandle,
+                        cod4,
+                        "mods/" + modName,
+                        report
+                    );
+                    modsImported = 1;
+                } else {
+                    // Import each immediate subdirectory that looks like a mod.
+                    for (const [name, handle] of topEntries) {
+                        if (handle.kind !== "directory") continue;
+
+                        const subEntries = [];
+                        for await (const e of handle.entries()) {
+                            subEntries.push(e);
+                        }
+
+                        if (!looksLikeModFolder(subEntries) && subEntries.length === 0) {
+                            continue;
+                        }
+
+                        log("Importing mod: " + name);
+                        const n = await copyDirectoryIntoOPFS(
+                            handle,
+                            cod4,
+                            "mods/" + name,
+                            report
+                        );
+                        totalFiles += n;
+                        modsImported += 1;
+                    }
+
+                    // Also allow loose .iwd/.ff at the root of the picker
+                    // (common when someone selects a folder of map packs).
+                    for (const [name, handle] of topEntries) {
+                        if (handle.kind !== "file") continue;
+                        const lower = name.toLowerCase();
+                        if (!lower.endsWith(".iwd") && !lower.endsWith(".ff")) {
+                            continue;
+                        }
+                        const file = await handle.getFile();
+                        const bytes = new Uint8Array(await file.arrayBuffer());
+                        const dest = "mods/" + dirHandle.name + "/" + name;
+                        await writeBytesToOPFS(cod4, dest, bytes);
+                        log("  + " + dest + " (" + bytes.byteLength + " bytes)");
+                        totalFiles += 1;
+                        if (modsImported === 0) modsImported = 1;
+                    }
+                }
+
+                if (modsImported === 0 && totalFiles === 0) {
+                    status(
+                        "No mod folders or .iwd/.ff files found in the " +
+                        "selected directory."
+                    );
+                    log("Import mods: nothing to copy.");
+                } else {
+                    status(
+                        "Imported " + modsImported + " mod(s), " +
+                        totalFiles + " file(s). Existing mods were kept."
+                    );
+                    log(
+                        "Import mods finished: " + modsImported +
+                        " mod(s), " + totalFiles + " file(s)."
+                    );
+                }
+
+            } catch (err) {
+                status("Import mods failed: " + (err?.message || err));
+                log("ERROR importing mods: " + (err?.message || err));
+            } finally {
+                setImportBusy(false);
+            }
+        }
+
+        function currentZoneLanguage() {
+            // Prefer the pack currently selected in the dropdown; fall back
+            // to whatever was last applied, then english.
+            const pack = currentPack();
+            if (pack && pack.name) return pack.name;
+            try {
+                return localStorage.getItem("kisak_langpack") || "english";
+            } catch {
+                return "english";
+            }
+        }
+
+        async function importCustomMapsFromFolder() {
+            if (importBusy) return;
+
+            if (typeof window.showDirectoryPicker !== "function") {
+                status(
+                    "This browser does not support folder selection " +
+                    "(showDirectoryPicker). Try Chrome/Edge/Chromium."
+                );
+                return;
+            }
+
+            if (!await hasInstalledGame()) {
+                status("Install the game first before importing custom maps.");
+                return;
+            }
+
+            let dirHandle;
+            try {
+                dirHandle = await window.showDirectoryPicker({
+                    id: "kisak-import-maps",
+                    mode: "read"
+                });
+            } catch (err) {
+                if (err && err.name === "AbortError") return;
+                status("Could not open folder: " + (err?.message || err));
+                return;
+            }
+
+            setImportBusy(true);
+
+            try {
+                const lang = currentZoneLanguage();
+                const zonePrefix = "zone/" + lang;
+
+                status("Importing custom maps into " + zonePrefix + "...");
+                log(
+                    "Importing custom maps (.ff / .iwd) from folder: " +
+                    dirHandle.name + " -> " + zonePrefix
+                );
+
+                const root = await getOPFSRoot();
+                const cod4 = await root.getDirectoryHandle("cod4");
+
+                await ensureOPFSDirectory(cod4, zonePrefix);
+
+                // Collect every .ff / .iwd under the selected tree.
+                const files = [];
+                async function walk(dir, prefix) {
+                    for await (const [name, handle] of dir.entries()) {
+                        const rel = prefix ? prefix + "/" + name : name;
+                        if (handle.kind === "directory") {
+                            await walk(handle, rel);
+                        } else {
+                            const lower = name.toLowerCase();
+                            if (lower.endsWith(".ff") || lower.endsWith(".iwd")) {
+                                files.push({ name, handle, rel });
+                            }
+                        }
+                    }
+                }
+                await walk(dirHandle, "");
+
+                if (files.length === 0) {
+                    status(
+                        "No .ff or .iwd files found in the selected folder."
+                    );
+                    log("Import custom maps: nothing to copy.");
+                    return;
+                }
+
+                let written = 0;
+                for (const item of files) {
+                    const file = await item.handle.getFile();
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    // Flatten into zone/<lang>/ using the basename so the
+                    // engine finds them the same way stock maps are laid out.
+                    const dest = zonePrefix + "/" + item.name;
+                    await writeBytesToOPFS(cod4, dest, bytes);
+                    log(
+                        "  + " + dest + " (" + bytes.byteLength +
+                        " bytes)  [from " + item.rel + "]"
+                    );
+                    written += 1;
+                }
+
+                status(
+                    "Imported " + written + " map file(s) into " +
+                    zonePrefix + ". Existing files with other names were kept."
+                );
+                log(
+                    "Import custom maps finished: " + written +
+                    " file(s) into " + zonePrefix
+                );
+
+            } catch (err) {
+                status(
+                    "Import custom maps failed: " + (err?.message || err)
+                );
+                log(
+                    "ERROR importing custom maps: " + (err?.message || err)
+                );
+            } finally {
+                setImportBusy(false);
+            }
+        }
+
+        if (importModsButton) {
+            importModsButton.addEventListener("click", () => {
+                importModsFromFolder();
+            });
+        }
+
+        if (importMapsButton) {
+            importMapsButton.addEventListener("click", () => {
+                importCustomMapsFromFolder();
+            });
+        }
+
+
         /* ============================================================
            DEV SAVE
            (Ships a bundled profile with the full campaign unlocked. It is
@@ -12015,13 +12415,17 @@
 
 
         // Read once, while the template still holds its <script>.
-        const ENGINE_SCRIPT_SRC =
-            document
-                .getElementById("module-script-template")
-                ?.content
-                ?.querySelector("script")
-                ?.getAttribute("src") ||
-            "kisakcod-sp.js";
+        // Override the template src for multiplayer mode so the injected
+        // script points at the correct engine build.
+        (function () {
+            const tmpl = document.getElementById("module-script-template");
+            const scr = tmpl && tmpl.content && tmpl.content.querySelector("script");
+            if (scr) {
+                scr.setAttribute("src", ENGINE_JS);
+            }
+        })();
+
+        const ENGINE_SCRIPT_SRC = ENGINE_JS;
 
         let gameEngineInjected = false;
 
@@ -12067,7 +12471,7 @@
 
             // Drop the injected glue so a later append re-executes it.
             document
-                .querySelectorAll('script[src*="kisakcod-sp.js"]')
+                .querySelectorAll('script[src*="kisakcod-sp.js"], script[src*="kisakcod-mp.js"]')
                 .forEach(
                     node => node.remove()
                 );
@@ -12371,7 +12775,22 @@
 
             gameScript.async = true;
 
-            gameScript.src = ENGINE_SCRIPT_SRC;
+            // In multiplayer mode forward useful query params (joinCode,
+            // bots, etc.) to the engine glue the same way the old
+            // kisakcod-mp.html did.
+            if (isMultiplayerMode) {
+                const srcUrl = new URL(ENGINE_SCRIPT_SRC, location.href);
+                for (const key of ["joinCode", "devmap", "ben", "bench",
+                                   "benchcmd", "benchdelay", "addbots"]) {
+                    const val = urlParams.get(key);
+                    if (val !== null) srcUrl.searchParams.set(key, val);
+                }
+                // Always tell the MP glue the LAN relay URL.
+                srcUrl.searchParams.set("kisakLan", Module.kisakLanUrl || "");
+                gameScript.src = srcUrl.href;
+            } else {
+                gameScript.src = ENGINE_SCRIPT_SRC;
+            }
 
             const appended = new Promise((resolve) => {
                 gameScript.addEventListener(
@@ -12503,9 +12922,11 @@
 
         /*
          * Multiplayer launcher. The multiplayer build is a separate engine
-         * (mp/kisakcod-mp.html) that reads the same /cod4 browser storage,
-         * so it opens as its own page rather than sharing this canvas
-         * (the two engine scripts cannot coexist in one document).
+         * that reads the same /cod4 browser storage. Because the two
+         * Emscripten glues declare top-level classes they cannot coexist
+         * (or be hot-swapped) in one document, so we navigate to the same
+         * index.html with ?mode=mp. That keeps everything in a single HTML
+         * file while still booting the correct wasm.
          */
         (function () {
 
@@ -12545,9 +12966,25 @@
 
                 }
 
-                location.href = "mp/kisakcod-mp.html";
+                // Stay on the single HTML: just switch to multiplayer mode.
+                // A full navigation is required because the two Emscripten
+                // glues declare top-level classes and cannot both live in
+                // (or be swapped inside) the same document.
+                const url = new URL(location.href);
+                url.searchParams.set("mode", "mp");
+                // Drop any previous joinCode so we start a fresh local session
+                // unless the user already had one in the URL.
+                location.href = url.toString();
 
             });
+
+            // When already in multiplayer mode, update button labels so the
+            // user knows which engine will start.
+            if (isMultiplayerMode) {
+                playButton.textContent = "Play Multiplayer";
+                multiplayerButton.textContent = "Multiplayer (active)";
+                multiplayerButton.disabled = true;
+            }
 
         })();
 
