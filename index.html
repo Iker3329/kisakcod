@@ -4572,7 +4572,20 @@
 
             canvas: canvas,
 
-            arguments: [],
+            // Multiplayer: disable in-game UDP/file downloads. The web relay
+            // cannot serve pak/map downloads the way a real dedicated server
+            // does, so when the host tries to push a file the client gets
+            // "CL_ParseDownload: invalid download block size -1". Both sides
+            // must already have the same maps/mods installed (Import Mods /
+            // Import Custom Maps).
+            arguments: isMultiplayerMode
+                ? [
+                    "+set", "sv_allowDownload", "0",
+                    "+set", "cl_allowDownload", "0",
+                    "+set", "sv_wwwDownload", "0",
+                    "+set", "sv_pure", "0"
+                  ]
+                : [],
 
             locateFile: path => {
                 // When the glue asks for the .wasm, hand it the correct
@@ -9443,6 +9456,17 @@
             if (arr) {
 
                 arr.length = 0;
+
+                // Keep download disabled in multiplayer so joins never hit
+                // the broken CL_ParseDownload path.
+                if (isMultiplayerMode) {
+                    arr.push(
+                        "+set", "sv_allowDownload", "0",
+                        "+set", "cl_allowDownload", "0",
+                        "+set", "sv_wwwDownload", "0",
+                        "+set", "sv_pure", "0"
+                    );
+                }
 
                 const pack = currentPack();
 
