@@ -9667,6 +9667,17 @@
 
             }
 
+            // Same-browser joins fail when the host runs fs_game mods/mp_bots
+            // but map .ff files only exist under zone/<lang>/. Mirror them.
+            if (isMultiplayerMode) {
+                try {
+                    status("Preparing mod files for multiplayer...");
+                    await ensureBotsModFiles();
+                } catch (e) {
+                    console.warn("ensureBotsModFiles", e);
+                }
+            }
+
 
             /*
              * First-play fix.
@@ -11006,6 +11017,116 @@
                 setImportBusy(false);
             }
         }
+
+
+        /**
+         * COD4 listen servers that run with fs_game mods/mp_bots advertise
+         * needed paks under that mod path (e.g. mods/mp_bots/mp_nuketown.ff).
+         * Stock and custom maps usually live in zone/<lang>/ only, so a second
+         * tab on the SAME browser (same OPFS) still fails the join check with
+         * "You are missing some files referenced by the server".
+         *
+         * Mirror any .ff / .iwd from zone/<lang>/ into mods/mp_bots/ when the
+         * bots mod folder exists and the file is not already there. Never
+         * deletes anything. Safe no-op if mp_bots is absent.
+         */
+        async function ensureBotsModFiles() {
+            try {
+                const root = await getOPFSRoot();
+                const cod4 = await root.getDirectoryHandle("cod4");
+
+                let botsDir;
+                try {
+                    const mods = await cod4.getDirectoryHandle("mods");
+                    botsDir = await mods.getDirectoryHandle("mp_bots");
+                } catch {
+                    return 0; // no bots mod installed — nothing to mirror
+                }
+
+                const lang = currentZoneLanguage();
+                let zoneDir;
+                try {
+                    const zone = await cod4.getDirectoryHandle("zone");
+                    zoneDir = await zone.getDirectoryHandle(lang);
+                } catch {
+                    try {
+                        const zone = await cod4.getDirectoryHandle("zone");
+                        zoneDir = await zone.getDirectoryHandle("english");
+                    } catch {
+                        return 0;
+                    }
+                }
+
+                // What is already in the bots mod?
+                const existing = new Set();
+                for await (const [name, handle] of botsDir.entries()) {
+                    if (handle.kind === "file") {
+                        existing.add(name.toLowerCase());
+                    }
+                }
+
+                let copied = 0;
+                for await (const [name, handle] of zoneDir.entries()) {
+                    if (handle.kind !== "file") continue;
+                    const lower = name.toLowerCase();
+                    if (!lower.endsWith(".ff") && !lower.endsWith(".iwd")) {
+                        continue;
+                    }
+                    if (existing.has(lower)) continue;
+
+                    const file = await handle.getFile();
+                    const bytes = new Uint8Array(await file.arrayBuffer());
+                    const dest = "mods/mp_bots/" + name;
+                    await writeBytesToOPFS(cod4, dest, bytes);
+                    log(
+                        "[mp] mirrored " + name + " -> mods/mp_bots/ (" +
+                        bytes.byteLength + " bytes)"
+                    );
+                    copied += 1;
+                }
+
+                if (copied > 0) {
+                    log(
+                        "[mp] mirrored " + copied +
+                        " zone file(s) into mods/mp_bots so joins can find them"
+                    );
+                }
+                return copied;
+            } catch (err) {
+                log(
+                    "[mp] ensureBotsModFiles: " + (err?.message || err)
+                );
+                return 0;
+            }
+        }
+
+        /** Debug: list what's under cod4/mods/ in OPFS (open DevTools console). */
+        window.kisakListMods = async function () {
+            try {
+                const root = await getOPFSRoot();
+                const cod4 = await root.getDirectoryHandle("cod4");
+                const mods = await cod4.getDirectoryHandle("mods");
+                const out = {};
+                for await (const [modName, modHandle] of mods.entries()) {
+                    if (modHandle.kind !== "directory") continue;
+                    const files = [];
+                    async function walk(dir, prefix) {
+                        for await (const [n, h] of dir.entries()) {
+                            const p = prefix ? prefix + "/" + n : n;
+                            if (h.kind === "directory") await walk(h, p);
+                            else files.push(p);
+                        }
+                    }
+                    await walk(modHandle, "");
+                    out[modName] = files;
+                }
+                console.log("[kisak] mods in OPFS:", out);
+                return out;
+            } catch (err) {
+                console.warn("[kisak] no mods folder or error:", err);
+                return null;
+            }
+        };
 
         if (importModsButton) {
             importModsButton.addEventListener("click", () => {
