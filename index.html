@@ -5364,6 +5364,197 @@
                 100
             );
 
+            /*
+             * CONTROLLER / GAMEPAD SUPPORT
+             * Ported from the original webport HTML (kisakGamepadOff
+             * shared-memory layout). Polls navigator.getGamepads() and
+             * writes axes + button bitmask into the engine input block.
+             */
+            (function installGamepadSupport() {
+                var gamepadOff = Module.kisakGamepadOff >> 2;
+                var hadGamepad = false;
+                var activeIndex = -1;
+                var lastId = "";
+                var activeLayout = null;
+
+                var LAYOUT_STANDARD = {
+                    name: "standard",
+                    axes: [0, 1, 2, 3],
+                    hat: -1,
+                    buttons: [
+                        0, 1, 2, 3, 4, 5, 6, 7,
+                        8, 9, 10, 11, 12, 13, 14, 15
+                    ]
+                };
+
+                // vendor:product → non-standard layouts
+                var LAYOUT_BY_ID = {
+                    "20d6:a711": {
+                        name: "PowerA wired (Switch layout)",
+                        axes: [0, 1, 2, 5],
+                        hat: 9,
+                        buttons: [
+                            1, 2, 0, 3, 4, 5, 6, 7,
+                            8, 9, 10, 11, -1, -1, -1, -1
+                        ]
+                    }
+                };
+
+                function gamepadIdKey(pad) {
+                    var m =
+                        /vendor:\s*([0-9a-f]{4})\s*product:\s*([0-9a-f]{4})/i
+                            .exec(pad.id) ||
+                        /^([0-9a-f]{4})-([0-9a-f]{4})-/i.exec(pad.id);
+                    return m
+                        ? (m[1] + ":" + m[2]).toLowerCase()
+                        : "";
+                }
+
+                function resolveLayout(pad) {
+                    if (pad.mapping === "standard") {
+                        return LAYOUT_STANDARD;
+                    }
+                    var known = LAYOUT_BY_ID[gamepadIdKey(pad)];
+                    if (known) return known;
+
+                    var hat = -1;
+                    for (var i = 0; i < pad.axes.length; i++) {
+                        if (Math.abs(pad.axes[i]) > 1.05) {
+                            hat = i;
+                            break;
+                        }
+                    }
+                    var buttons = [];
+                    for (var b = 0; b < 16; b++) {
+                        buttons.push(b < pad.buttons.length ? b : -1);
+                    }
+                    return {
+                        name: "generic non-standard",
+                        axes: [
+                            0,
+                            1,
+                            2,
+                            pad.axes.length >= 6 ? 5 : 3
+                        ],
+                        hat: hat,
+                        buttons: buttons
+                    };
+                }
+
+                function padHasActivity(pad, layout) {
+                    for (var a = 0; a < pad.buttons.length; a++) {
+                        var btn = pad.buttons[a];
+                        if (btn && (btn.pressed || btn.value > 0.5)) {
+                            return true;
+                        }
+                    }
+                    for (var i = 0; i < 4; i++) {
+                        if (Math.abs(pad.axes[layout.axes[i]] || 0) > 0.4) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                function pickGamepad() {
+                    var list = navigator.getGamepads
+                        ? navigator.getGamepads()
+                        : null;
+                    if (!list) return null;
+
+                    var first = null;
+                    var preferred = null;
+                    for (var i = 0; i < list.length; i++) {
+                        var pad = list[i];
+                        if (!pad || !pad.connected) continue;
+                        if (
+                            !first ||
+                            (pad.mapping === "standard" &&
+                                first.mapping !== "standard")
+                        ) {
+                            first = pad;
+                        }
+                        if (pad.index === activeIndex) {
+                            preferred = pad;
+                        }
+                        if (padHasActivity(pad, resolveLayout(pad))) {
+                            activeIndex = pad.index;
+                            preferred = pad;
+                        }
+                    }
+                    return preferred || first;
+                }
+
+                function hatToBits(value) {
+                    if (!(value >= -1.05 && value <= 1.05)) return 0;
+                    var t = Math.round(3.5 * (value + 1));
+                    if (t < 0) t = 0;
+                    if (t > 7) t = 7;
+                    var U = 4096, D = 8192, L = 16384, R = 32768;
+                    return [U, U | R, R, D | R, D, D | L, L, U | L][t];
+                }
+
+                setInterval(function () {
+                    if (!gamepadOff) return;
+
+                    var pad = pickGamepad();
+                    var heap = getHeap32();
+                    var slot = (base >> 2) + gamepadOff;
+
+                    if (!pad) {
+                        if (hadGamepad) {
+                            heap[slot] = 0;
+                            heap[slot + 1] = 0;
+                            heap[slot + 2] = 0;
+                            heap[slot + 3] = 0;
+                            heap[slot + 4] = 0;
+                            heap[slot + 5] = 0;
+                            hadGamepad = false;
+                            lastId = "";
+                        }
+                        return;
+                    }
+
+                    var idKey =
+                        pad.index + "|" + pad.id + "|" + pad.mapping;
+                    if (idKey !== lastId) {
+                        lastId = idKey;
+                        activeLayout = resolveLayout(pad);
+                        console.log(
+                            "[gamepad] " + pad.id +
+                            " mapping='" + pad.mapping +
+                            "' axes=" + pad.axes.length +
+                            " buttons=" + pad.buttons.length +
+                            " layout=" + activeLayout.name
+                        );
+                    }
+
+                    var layout = activeLayout;
+                    for (var ai = 0; ai < 4; ai++) {
+                        var v = pad.axes[layout.axes[ai]] || 0;
+                        if (v > 1) v = 1;
+                        else if (v < -1) v = -1;
+                        heap[slot + ai] = Math.round(v * 10000);
+                    }
+
+                    var bits = 0;
+                    for (var bi = 0; bi < 16; bi++) {
+                        var src = layout.buttons[bi];
+                        var btn =
+                            src >= 0 ? pad.buttons[src] : null;
+                        if (btn && (btn.pressed || btn.value > 0.5)) {
+                            bits |= 1 << bi;
+                        }
+                    }
+                    if (layout.hat >= 0) {
+                        bits |= hatToBits(pad.axes[layout.hat]);
+                    }
+                    heap[slot + 4] = bits;
+                    heap[slot + 5] = 1;
+                    hadGamepad = true;
+                }, 8);
+            })();
+
         };
 
 
