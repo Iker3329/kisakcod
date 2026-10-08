@@ -9706,11 +9706,16 @@
             }
 
             // Normal Play clears a previous Rooftops fs_game so campaign
-            // boots without the mod. Launch Rooftops sets the flag again
-            // before calling playGame.
-            if (!window.__kisakFsGameKeep) {
-                try { sessionStorage.removeItem("kisak_launch_fs_game"); } catch (e) { }
-                try { delete window.__kisakFsGame; } catch (e) { window.__kisakFsGame = null; }
+            // boots without the mod — but only when there is no pending
+            // launch intent in sessionStorage (Launch Rooftops / auto-play).
+            let pendingFs = null;
+            try {
+                pendingFs = sessionStorage.getItem("kisak_launch_fs_game");
+            } catch (e) { }
+            if (!window.__kisakFsGameKeep && !pendingFs) {
+                try { delete window.__kisakFsGame; } catch (e) {
+                    window.__kisakFsGame = null;
+                }
             }
             window.__kisakFsGameKeep = false;
 
@@ -11189,72 +11194,110 @@
          */
         async function launchRooftops() {
             const FS_GAME = "mods/Rooftops1";
+            console.log("[kisak] Launch Rooftops clicked");
+            status("Launch Rooftops: preparing…");
 
             if (!await hasInstalledGame()) {
                 status("Install the game first.");
                 return;
             }
 
+            // Always persist intent so a reload boots with fs_game.
             try {
                 sessionStorage.setItem("kisak_launch_fs_game", FS_GAME);
+                sessionStorage.setItem("kisak_auto_play", "1");
             } catch (e) {
                 status("Could not set launch options: " + (e?.message || e));
+                console.warn("[kisak] sessionStorage failed", e);
                 return;
             }
             window.__kisakFsGame = FS_GAME;
+            window.__kisakFsGameKeep = true;
 
+            // In-place update if the engine already holds the array.
+            try {
+                const arr = getEngineArgsArray();
+                if (arr) {
+                    for (let i = arr.length - 2; i >= 0; i--) {
+                        if (arr[i] === "+set" && arr[i + 1] === "fs_game") {
+                            arr.splice(i, 3);
+                        }
+                    }
+                    arr.push("+set", "fs_game", FS_GAME);
+                    console.log("[kisak] launch args:", arr.slice());
+                } else {
+                    console.log("[kisak] launch args: (no array yet) will apply on reload");
+                }
+            } catch (e) {
+                console.warn("[kisak] args mutate failed", e);
+            }
+
+            status("Launching Rooftops (fs_game " + FS_GAME + ")…");
+            log("Launch Rooftops with +set fs_game " + FS_GAME);
+
+            // Multiplayer page → go to SP with same session flags.
             if (isMultiplayerMode) {
-                status("Switching to singleplayer for Rooftops…");
                 const url = new URL(location.href);
                 url.searchParams.delete("mode");
                 location.href = url.toString();
                 return;
             }
 
-            // Mutate the existing args array in place — the engine may already
-            // hold a reference to it (programArgs === Module.arguments).
-            const arr = getEngineArgsArray();
-            if (arr) {
-                // Strip any previous fs_game pair, then append.
-                for (let i = arr.length - 2; i >= 0; i--) {
-                    if (arr[i] === "+set" && arr[i + 1] === "fs_game") {
-                        arr.splice(i, 3);
-                    }
-                }
-                arr.push("+set", "fs_game", FS_GAME);
-            } else if (window.Module) {
-                window.Module.arguments = ["+set", "fs_game", FS_GAME];
-            }
+            // Always reload so kisakcod-sp.js reads Module.arguments with
+            // fs_game at glue evaluation time (programArgs is fixed then).
+            console.log("[kisak] reloading for clean Rooftops boot…");
+            location.reload();
+        }
 
-            status("Launching Rooftops (fs_game " + FS_GAME + ")…");
-            log("Launch Rooftops with +set fs_game " + FS_GAME);
+
+        async function maybeAutoPlayRooftops() {
+            let auto = null;
+            let fs = null;
             try {
-                console.log(
-                    "[kisak] launch args:",
-                    getEngineArgsArray() && getEngineArgsArray().slice()
-                );
+                auto = sessionStorage.getItem("kisak_auto_play");
+                fs = sessionStorage.getItem("kisak_launch_fs_game");
+            } catch (e) { return; }
+            if (auto !== "1" || !fs) return;
+            try { sessionStorage.removeItem("kisak_auto_play"); } catch (e) { }
+
+            window.__kisakFsGame = fs;
+            window.__kisakFsGameKeep = true;
+
+            // Ensure args array has fs_game before play.
+            try {
+                const arr = getEngineArgsArray();
+                if (arr) {
+                    for (let i = arr.length - 2; i >= 0; i--) {
+                        if (arr[i] === "+set" && arr[i + 1] === "fs_game") {
+                            arr.splice(i, 3);
+                        }
+                    }
+                    arr.push("+set", "fs_game", fs);
+                }
             } catch (e) { }
 
-            // If the engine glue already ran, only a full reload picks up a
-            // clean boot with fs_game (programArgs is fixed at glue eval).
-            if (
-                window.__kisakEngineGlueRan ||
-                window.__kisakGameStarted ||
-                document.body.classList.contains("game-running") ||
-                gameEngineInjected
-            ) {
-                location.reload();
-                return;
+            console.log(
+                "[kisak] auto-play Rooftops with fs_game",
+                fs,
+                "args=",
+                getEngineArgsArray() && getEngineArgsArray().slice()
+            );
+            status("Auto-starting Rooftops (fs_game " + fs + ")…");
+
+            // Wait until OPFS ready and play enabled.
+            for (let i = 0; i < 80; i++) {
+                if (window.__kisakOpfsReady && playButton && !playButton.disabled) {
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 100));
             }
 
-            window.__kisakFsGameKeep = true;
             if (typeof playGame === "function") {
+                window.__kisakFsGameKeep = true;
                 await playGame();
-            } else {
-                const pb = document.getElementById("play-button");
-                if (pb) pb.click();
             }
         }
+
 
         const importRooftopsButton =
             document.getElementById("import-rooftops-button");
@@ -11271,6 +11314,9 @@
                 launchRooftops();
             });
         }
+
+        // After Launch Rooftops reload, auto-start Play with fs_game.
+        maybeAutoPlayRooftops();
 
 
 
