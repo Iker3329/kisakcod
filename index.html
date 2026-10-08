@@ -650,6 +650,14 @@
                 Import Custom Maps
             </button>
 
+            <button id="import-rooftops-button" type="button">
+                Import Rooftops Mod
+            </button>
+
+            <button id="launch-rooftops-button" type="button">
+                Launch Rooftops
+            </button>
+
 
             <input id="upload-save-input" type="file" accept=".dat,.zip" hidden>
 
@@ -4579,14 +4587,24 @@
             // "CL_ParseDownload: invalid download block size -1". Both sides
             // must already have the same maps/mods installed (Import Mods /
             // Import Custom Maps).
-            arguments: isMultiplayerMode
-                ? [
-                    "+set", "sv_allowDownload", "0",
-                    "+set", "cl_allowDownload", "0",
-                    "+set", "sv_wwwDownload", "0",
-                    "+set", "sv_pure", "0"
-                  ]
-                : [],
+            arguments: (function () {
+                if (isMultiplayerMode) {
+                    return [
+                        "+set", "sv_allowDownload", "0",
+                        "+set", "cl_allowDownload", "0",
+                        "+set", "sv_wwwDownload", "0",
+                        "+set", "sv_pure", "0"
+                    ];
+                }
+                try {
+                    const fs = sessionStorage.getItem("kisak_launch_fs_game");
+                    if (fs && typeof fs === "string" && fs.trim()) {
+                        sessionStorage.removeItem("kisak_launch_fs_game");
+                        return ["+set", "fs_game", fs.trim()];
+                    }
+                } catch (e) { }
+                return [];
+            })(),
 
             locateFile: path => {
                 // When the glue asks for the .wasm, hand it the correct
@@ -10686,6 +10704,10 @@
             importBusy = busy;
             if (importModsButton) importModsButton.disabled = busy;
             if (importMapsButton) importMapsButton.disabled = busy;
+            const ir = document.getElementById("import-rooftops-button");
+            const lr = document.getElementById("launch-rooftops-button");
+            if (ir) ir.disabled = busy;
+            if (lr) lr.disabled = busy;
         }
 
         async function writeBytesToOPFS(root, path, bytes) {
@@ -10797,7 +10819,7 @@
                 const cod4 = await root.getDirectoryHandle("cod4");
 
                 // Ensure mods/ exists without touching its contents.
-                await ensureOPFSDirectory(cod4, "mods");
+                await ensureOPFSDirectory(cod4, "mods"); // must be lowercase — engine looks for cod4/mods/
 
                 const topEntries = [];
                 for await (const entry of dirHandle.entries()) {
@@ -10812,8 +10834,8 @@
                 };
 
                 if (looksLikeModFolder(topEntries)) {
-                    // Selected folder IS the mod.
-                    const modName = dirHandle.name;
+                    // Selected folder IS the mod (name forced lowercase for the engine).
+                    const modName = String(dirHandle.name).toLowerCase();
                     log("Treating selected folder as single mod: " + modName);
                     totalFiles = await copyDirectoryIntoOPFS(
                         dirHandle,
@@ -10836,11 +10858,12 @@
                             continue;
                         }
 
-                        log("Importing mod: " + name);
+                        const modName = String(name).toLowerCase();
+                        log("Importing mod: " + modName);
                         const n = await copyDirectoryIntoOPFS(
                             handle,
                             cod4,
-                            "mods/" + name,
+                            "mods/" + modName,
                             report
                         );
                         totalFiles += n;
@@ -10857,7 +10880,7 @@
                         }
                         const file = await handle.getFile();
                         const bytes = new Uint8Array(await file.arrayBuffer());
-                        const dest = "mods/" + dirHandle.name + "/" + name;
+                        const dest = "mods/" + String(dirHandle.name).toLowerCase() + "/" + name;
                         await writeBytesToOPFS(cod4, dest, bytes);
                         log("  + " + dest + " (" + bytes.byteLength + " bytes)");
                         totalFiles += 1;
@@ -11058,6 +11081,146 @@
                 importCustomMapsFromFolder();
             });
         }
+
+        /**
+         * Import Rooftops: copy the entire selected folder into cod4/
+         * (game root in OPFS), preserving relative paths. Does not wipe
+         * existing files; same paths are overwritten.
+         */
+        async function importRooftopsMod() {
+            if (importBusy) return;
+
+            if (typeof window.showDirectoryPicker !== "function") {
+                status(
+                    "This browser does not support folder selection " +
+                    "(showDirectoryPicker). Try Chrome/Edge/Chromium."
+                );
+                return;
+            }
+
+            if (!await hasInstalledGame()) {
+                status("Install the game first before importing Rooftops.");
+                return;
+            }
+
+            let dirHandle;
+            try {
+                dirHandle = await window.showDirectoryPicker({
+                    id: "kisak-import-rooftops",
+                    mode: "read"
+                });
+            } catch (err) {
+                if (err && err.name === "AbortError") return;
+                status("Could not open folder: " + (err?.message || err));
+                return;
+            }
+
+            setImportBusy(true);
+            try {
+                const root = await navigator.storage.getDirectory();
+                const cod4 = await root.getDirectoryHandle("cod4", {
+                    create: false
+                });
+
+                status("Importing Rooftops into cod4/ ...");
+                log("Import Rooftops from folder: " + dirHandle.name);
+
+                let n = 0;
+                const report = (rel, bytes) => {
+                    n += 1;
+                    if (n <= 30 || n % 50 === 0) {
+                        log("  + " + rel + " (" + bytes + " bytes)");
+                    }
+                    if (n % 25 === 0) {
+                        status("Importing Rooftops… " + n + " file(s)");
+                    }
+                };
+
+                const total = await copyDirectoryIntoOPFS(
+                    dirHandle,
+                    cod4,
+                    "",
+                    report
+                );
+
+                status(
+                    "Rooftops import finished: " + total +
+                    " file(s) into cod4/. Existing other files kept."
+                );
+                log("Import Rooftops finished: " + total + " file(s) into cod4/");
+            } catch (err) {
+                status("Import Rooftops failed: " + (err?.message || err));
+                log("ERROR importing Rooftops: " + (err?.message || err));
+            } finally {
+                setImportBusy(false);
+            }
+        }
+
+        /**
+         * Launch singleplayer with +set fs_game mods/rooftops1.
+         */
+        async function launchRooftops() {
+            const FS_GAME = "mods/rooftops1";
+
+            if (!await hasInstalledGame()) {
+                status("Install the game first.");
+                return;
+            }
+
+            try {
+                sessionStorage.setItem("kisak_launch_fs_game", FS_GAME);
+            } catch (e) {
+                status("Could not set launch options: " + (e?.message || e));
+                return;
+            }
+
+            if (isMultiplayerMode) {
+                status("Switching to singleplayer for Rooftops…");
+                const url = new URL(location.href);
+                url.searchParams.delete("mode");
+                location.href = url.toString();
+                return;
+            }
+
+            if (window.Module) {
+                window.Module.arguments = ["+set", "fs_game", FS_GAME];
+            }
+
+            status("Launching Rooftops (fs_game " + FS_GAME + ")…");
+            log("Launch Rooftops with +set fs_game " + FS_GAME);
+
+            if (
+                window.__kisakGameStarted ||
+                document.body.classList.contains("game-running")
+            ) {
+                location.reload();
+                return;
+            }
+
+            if (typeof playGame === "function") {
+                await playGame();
+            } else {
+                const pb = document.getElementById("play-button");
+                if (pb) pb.click();
+            }
+        }
+
+        const importRooftopsButton =
+            document.getElementById("import-rooftops-button");
+        const launchRooftopsButton =
+            document.getElementById("launch-rooftops-button");
+
+        if (importRooftopsButton) {
+            importRooftopsButton.addEventListener("click", () => {
+                importRooftopsMod();
+            });
+        }
+        if (launchRooftopsButton) {
+            launchRooftopsButton.addEventListener("click", () => {
+                launchRooftops();
+            });
+        }
+
 
 
         /* ============================================================
