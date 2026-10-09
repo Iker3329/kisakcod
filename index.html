@@ -666,6 +666,10 @@
                 Install unlock stats (mpdata)
             </button>
 
+            <button id="install-unlockall-mod-button" type="button">
+                Install unlock-all mod
+            </button>
+
             <button id="reset-mods-button" type="button" class="danger">
                 Reset mods folder
             </button>
@@ -11692,6 +11696,16 @@
                 return;
             }
 
+            async function writeMpdata(dirHandle, relLog) {
+                const fileHandle = await dirHandle.getFileHandle("mpdata", {
+                    create: true
+                });
+                const w = await fileHandle.createWritable();
+                await w.write(bytes);
+                await w.close();
+                log("[mpdata] wrote " + relLog);
+            }
+
             try {
                 const root = await navigator.storage.getDirectory();
                 const cod4 = await root.getDirectoryHandle("cod4", {
@@ -11735,21 +11749,57 @@
                     const profDir = await profiles.getDirectoryHandle(prof, {
                         create: true
                     });
-                    const fileHandle = await profDir.getFileHandle("mpdata", {
-                        create: true
-                    });
-                    const w = await fileHandle.createWritable();
-                    await w.write(bytes);
-                    await w.close();
-                    written += 1;
-                    log(
-                        "[mpdata] wrote players/profiles/" + prof + "/mpdata"
+
+                    // 1) Default path: profiles/<name>/mpdata
+                    await writeMpdata(
+                        profDir,
+                        "players/profiles/" + prof + "/mpdata"
                     );
+                    written += 1;
+
+                    // 2) When fs_game is set (e.g. mods/mp_bots), engine reads
+                    //    profiles/<name>/<fs_game>/mpdata — write common cases.
+                    let modsDir = null;
+                    try {
+                        modsDir = await profDir.getDirectoryHandle("mods", {
+                            create: true
+                        });
+                    } catch (e) { }
+
+                    if (modsDir) {
+                        // Always ensure mp_bots slot
+                        const bots = await modsDir.getDirectoryHandle(
+                            "mp_bots",
+                            { create: true }
+                        );
+                        await writeMpdata(
+                            bots,
+                            "players/profiles/" + prof +
+                            "/mods/mp_bots/mpdata"
+                        );
+                        written += 1;
+
+                        // Any other existing mod folders under profile/mods
+                        for await (const [modName, modHandle] of modsDir.entries()) {
+                            if (
+                                modHandle.kind === "directory" &&
+                                modName !== "mp_bots"
+                            ) {
+                                await writeMpdata(
+                                    modHandle,
+                                    "players/profiles/" + prof +
+                                    "/mods/" + modName + "/mpdata"
+                                );
+                                written += 1;
+                            }
+                        }
+                    }
                 }
 
                 status(
-                    "mpdata installed into " + profileNames.length +
-                    " profile(s). Restart multiplayer for stats to load."
+                    "mpdata installed (" + written +
+                    " file(s) across " + profileNames.length +
+                    " profile(s)). Fully restart multiplayer (reload page)."
                 );
                 log(
                     "[mpdata] done — profiles: " + profileNames.join(", ")
@@ -11767,6 +11817,70 @@
                 installUnlockMpdata();
             });
         }
+
+        /**
+         * Install unlock-all mod: rankTable.csv with every stock unlock
+         * moved to rank 0. Written to cod4/mods/unlockall/mp/
+         */
+        async function installUnlockAllMod() {
+            const URL =
+                "https://raw.githubusercontent.com/Iker3329/kisakcod/main/assets/rankTable.csv";
+
+            if (!await hasInstalledGame()) {
+                status("Install the game first.");
+                return;
+            }
+
+            status("Downloading unlock-all rankTable…");
+            log("[unlockall] fetching " + URL);
+
+            let text;
+            try {
+                const res = await fetch(URL, { cache: "no-cache" });
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                text = await res.text();
+                if (text.length < 100) {
+                    throw new Error("rankTable.csv too small");
+                }
+                log("[unlockall] downloaded " + text.length + " chars");
+            } catch (err) {
+                status("unlock-all download failed: " + (err?.message || err));
+                log("ERROR unlockall: " + (err?.message || err));
+                return;
+            }
+
+            try {
+                const root = await navigator.storage.getDirectory();
+                const cod4 = await root.getDirectoryHandle("cod4", {
+                    create: false
+                });
+                await ensureOPFSDirectory(cod4, "mods/unlockall/mp");
+                const bytes = new TextEncoder().encode(text);
+                await writeBytesToOPFS(
+                    cod4,
+                    "mods/unlockall/mp/rankTable.csv",
+                    bytes
+                );
+                status(
+                    "Unlock-all mod installed at mods/unlockall. " +
+                    "Start multiplayer with fs_game mods/unlockall " +
+                    "(both players need it)."
+                );
+                log("[unlockall] wrote mods/unlockall/mp/rankTable.csv");
+            } catch (err) {
+                status("unlock-all install failed: " + (err?.message || err));
+                log("ERROR unlockall install: " + (err?.message || err));
+            }
+        }
+
+        const installUnlockAllModButton =
+            document.getElementById("install-unlockall-mod-button");
+        if (installUnlockAllModButton) {
+            installUnlockAllModButton.addEventListener("click", () => {
+                installUnlockAllMod();
+            });
+        }
+
 
 
         /**
