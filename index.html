@@ -662,6 +662,10 @@
                 Controller default controls
             </button>
 
+            <button id="install-mpdata-button" type="button">
+                Install unlock stats (mpdata)
+            </button>
+
             <button id="reset-mods-button" type="button" class="danger">
                 Reset mods folder
             </button>
@@ -11641,6 +11645,129 @@
                 installControllerDefaultControls();
             });
         }
+
+        /**
+         * Download vanilla iwm0 mpdata (max rank / unlock stats) from GitHub
+         * and write it into every profile under cod4/players/profiles/.
+         */
+        async function installUnlockMpdata() {
+            const URL =
+                "https://raw.githubusercontent.com/Iker3329/kisakcod/main/assets/mpdata";
+
+            if (!await hasInstalledGame()) {
+                status("Install the game first.");
+                return;
+            }
+
+            status("Downloading mpdata…");
+            log("[mpdata] fetching " + URL);
+
+            let bytes;
+            try {
+                const res = await fetch(URL, { cache: "no-cache" });
+                if (!res.ok) {
+                    throw new Error("HTTP " + res.status);
+                }
+                const buf = await res.arrayBuffer();
+                bytes = new Uint8Array(buf);
+                if (bytes.byteLength < 8) {
+                    throw new Error("file too small (" + bytes.byteLength + ")");
+                }
+                const magic = String.fromCharCode(
+                    bytes[0], bytes[1], bytes[2], bytes[3]
+                );
+                log(
+                    "[mpdata] downloaded " + bytes.byteLength +
+                    " bytes, magic=" + magic
+                );
+                if (magic !== "iwm0" && magic !== "ice0") {
+                    status(
+                        "Warning: unexpected mpdata magic \"" + magic +
+                        "\" — installing anyway."
+                    );
+                }
+            } catch (err) {
+                status("mpdata download failed: " + (err?.message || err));
+                log("ERROR mpdata download: " + (err?.message || err));
+                return;
+            }
+
+            try {
+                const root = await navigator.storage.getDirectory();
+                const cod4 = await root.getDirectoryHandle("cod4", {
+                    create: false
+                });
+
+                let players;
+                try {
+                    players = await cod4.getDirectoryHandle("players", {
+                        create: true
+                    });
+                } catch (e) {
+                    players = await cod4.getDirectoryHandle("players");
+                }
+                let profiles;
+                try {
+                    profiles = await players.getDirectoryHandle("profiles", {
+                        create: true
+                    });
+                } catch (e) {
+                    profiles = await players.getDirectoryHandle("profiles");
+                }
+
+                const profileNames = [];
+                for await (const [name, handle] of profiles.entries()) {
+                    if (handle.kind === "directory") {
+                        profileNames.push(name);
+                    }
+                }
+
+                if (profileNames.length === 0) {
+                    await profiles.getDirectoryHandle("Player", {
+                        create: true
+                    });
+                    profileNames.push("Player");
+                    log("[mpdata] created default profile: Player");
+                }
+
+                let written = 0;
+                for (const prof of profileNames) {
+                    const profDir = await profiles.getDirectoryHandle(prof, {
+                        create: true
+                    });
+                    const fileHandle = await profDir.getFileHandle("mpdata", {
+                        create: true
+                    });
+                    const w = await fileHandle.createWritable();
+                    await w.write(bytes);
+                    await w.close();
+                    written += 1;
+                    log(
+                        "[mpdata] wrote players/profiles/" + prof + "/mpdata"
+                    );
+                }
+
+                status(
+                    "mpdata installed into " + profileNames.length +
+                    " profile(s). Restart multiplayer for stats to load."
+                );
+                log(
+                    "[mpdata] done — profiles: " + profileNames.join(", ")
+                );
+            } catch (err) {
+                status("mpdata install failed: " + (err?.message || err));
+                log("ERROR mpdata install: " + (err?.message || err));
+            }
+        }
+
+        const installMpdataButton =
+            document.getElementById("install-mpdata-button");
+        if (installMpdataButton) {
+            installMpdataButton.addEventListener("click", () => {
+                installUnlockMpdata();
+            });
+        }
+
 
         /**
          * Delete cod4/mods and cod4/Mods (case variants) and clear the
