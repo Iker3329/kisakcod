@@ -658,6 +658,10 @@
                 Launch Rooftops
             </button>
 
+            <button id="controller-defaults-button" type="button">
+                Controller default controls
+            </button>
+
 
             <input id="upload-save-input" type="file" accept=".dat,.zip" hidden>
 
@@ -11505,6 +11509,135 @@
                 launchRooftops();
             });
         }
+
+        /**
+         * Download stock controller-enabled configs from GitHub and install
+         * them into every profile under cod4/players/profiles/<name>/.
+         */
+        async function installControllerDefaultControls() {
+            const BASE =
+                "https://raw.githubusercontent.com/Iker3329/kisakcod/main/assets/";
+            const FILES = ["config.cfg", "config_mp.cfg"];
+
+            if (!await hasInstalledGame()) {
+                status("Install the game first.");
+                return;
+            }
+
+            status("Downloading controller default configs…");
+            log("[controller] fetching configs from " + BASE);
+
+            let texts = {};
+            try {
+                for (const name of FILES) {
+                    const url = BASE + name;
+                    const res = await fetch(url, { cache: "no-cache" });
+                    if (!res.ok) {
+                        throw new Error(name + ": HTTP " + res.status);
+                    }
+                    texts[name] = await res.text();
+                    log("[controller] downloaded " + name + " (" +
+                        texts[name].length + " bytes)");
+                }
+            } catch (err) {
+                status(
+                    "Controller configs download failed: " +
+                    (err?.message || err)
+                );
+                log("ERROR controller download: " + (err?.message || err));
+                return;
+            }
+
+            try {
+                const root = await navigator.storage.getDirectory();
+                const cod4 = await root.getDirectoryHandle("cod4", {
+                    create: false
+                });
+
+                // Ensure players/profiles exists
+                let players;
+                try {
+                    players = await cod4.getDirectoryHandle("players", {
+                        create: true
+                    });
+                } catch (e) {
+                    players = await cod4.getDirectoryHandle("players");
+                }
+                let profiles;
+                try {
+                    profiles = await players.getDirectoryHandle("profiles", {
+                        create: true
+                    });
+                } catch (e) {
+                    profiles = await players.getDirectoryHandle("profiles");
+                }
+
+                // Collect profile folders (directories only)
+                const profileNames = [];
+                for await (const [name, handle] of profiles.entries()) {
+                    if (handle.kind === "directory") {
+                        profileNames.push(name);
+                    }
+                }
+
+                // If none exist, create a default profile
+                if (profileNames.length === 0) {
+                    await profiles.getDirectoryHandle("Player", {
+                        create: true
+                    });
+                    profileNames.push("Player");
+                    log("[controller] created default profile: Player");
+                }
+
+                let written = 0;
+                for (const prof of profileNames) {
+                    const profDir = await profiles.getDirectoryHandle(prof, {
+                        create: true
+                    });
+                    for (const name of FILES) {
+                        const bytes = new TextEncoder().encode(texts[name]);
+                        const fileHandle = await profDir.getFileHandle(
+                            name,
+                            { create: true }
+                        );
+                        const w = await fileHandle.createWritable();
+                        await w.write(bytes);
+                        await w.close();
+                        written += 1;
+                        log(
+                            "[controller] wrote players/profiles/" +
+                            prof + "/" + name
+                        );
+                    }
+                }
+
+                status(
+                    "Controller defaults installed into " +
+                    profileNames.length +
+                    " profile(s) (" +
+                    written +
+                    " file(s)). Restart the game for binds to load."
+                );
+                log(
+                    "[controller] done — profiles: " +
+                    profileNames.join(", ")
+                );
+            } catch (err) {
+                status(
+                    "Controller install failed: " + (err?.message || err)
+                );
+                log("ERROR controller install: " + (err?.message || err));
+            }
+        }
+
+        const controllerDefaultsButton =
+            document.getElementById("controller-defaults-button");
+        if (controllerDefaultsButton) {
+            controllerDefaultsButton.addEventListener("click", () => {
+                installControllerDefaultControls();
+            });
+        }
+
 
         // After Launch Rooftops reload, auto-start Play with fs_game.
         maybeAutoPlayRooftops();
