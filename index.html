@@ -662,6 +662,10 @@
                 Controller default controls
             </button>
 
+            <button id="reset-mods-button" type="button" class="danger">
+                Reset mods folder
+            </button>
+
 
             <input id="upload-save-input" type="file" accept=".dat,.zip" hidden>
 
@@ -11637,6 +11641,100 @@
                 installControllerDefaultControls();
             });
         }
+
+        /**
+         * Delete cod4/mods and cod4/Mods (case variants) and clear the
+         * bots-mod install flag so multiplayer re-downloads mp_bots.
+         */
+        async function resetModsFolder() {
+            if (!await hasInstalledGame()) {
+                status("Install the game first.");
+                return;
+            }
+
+            const ok = window.confirm(
+                "Delete the mods folder (mods and Mods) from browser storage?\n\n" +
+                "Custom mods you imported will be removed. " +
+                "The bots mod will re-download the next time you start multiplayer."
+            );
+            if (!ok) return;
+
+            status("Removing mods folders…");
+            log("[mods] reset: removing cod4/mods and cod4/Mods");
+
+            let removed = [];
+            let failed = [];
+
+            try {
+                const root = await navigator.storage.getDirectory();
+                const cod4 = await root.getDirectoryHandle("cod4", {
+                    create: false
+                });
+
+                for (const name of ["mods", "Mods"]) {
+                    try {
+                        await cod4.removeEntry(name, { recursive: true });
+                        removed.push(name);
+                        log("[mods] removed cod4/" + name);
+                    } catch (err) {
+                        // NotFoundError = already gone — fine
+                        if (err && err.name === "NotFoundError") {
+                            log("[mods] cod4/" + name + " not present");
+                        } else {
+                            failed.push(name + ": " + (err?.message || err));
+                            log(
+                                "[mods] failed to remove " + name + ": " +
+                                (err?.message || err)
+                            );
+                        }
+                    }
+                }
+
+                // Force bots mod re-download on next MP boot
+                try {
+                    localStorage.removeItem("kisak_mods_installed");
+                    log("[mods] cleared localStorage kisak_mods_installed");
+                } catch (e) { }
+
+                try {
+                    delete window.__kisakModsReady;
+                } catch (e) {
+                    window.__kisakModsReady = false;
+                }
+
+                if (failed.length) {
+                    status(
+                        "Mods reset partial: removed [" +
+                        removed.join(", ") +
+                        "]; errors: " +
+                        failed.join("; ")
+                    );
+                } else if (removed.length) {
+                    status(
+                        "Removed: " +
+                        removed.map(n => "cod4/" + n).join(", ") +
+                        ". Start multiplayer to re-download the bots mod."
+                    );
+                } else {
+                    status(
+                        "No mods folder found. Cleared install flag — " +
+                        "start multiplayer to download the bots mod."
+                    );
+                }
+            } catch (err) {
+                status("Reset mods failed: " + (err?.message || err));
+                log("ERROR reset mods: " + (err?.message || err));
+            }
+        }
+
+        const resetModsButton =
+            document.getElementById("reset-mods-button");
+        if (resetModsButton) {
+            resetModsButton.addEventListener("click", () => {
+                resetModsFolder();
+            });
+        }
+
 
 
         // After Launch Rooftops reload, auto-start Play with fs_game.
