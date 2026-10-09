@@ -670,6 +670,10 @@
                 Install unlock-all mod
             </button>
 
+            <button id="launch-unlockall-mp-button" type="button">
+                Launch unlock-all MP
+            </button>
+
             <button id="reset-mods-button" type="button" class="danger">
                 Reset mods folder
             </button>
@@ -763,6 +767,14 @@
            to boot the multiplayer engine instead of the singleplayer one.
            ============================================================ */
         const urlParams = new URLSearchParams(location.search);
+        try {
+            const fsParam = urlParams.get("fs_game");
+            if (fsParam && fsParam.trim()) {
+                sessionStorage.setItem("kisak_launch_fs_game", fsParam.trim());
+                window.__kisakFsGame = fsParam.trim();
+            }
+        } catch (e) { }
+
         const isMultiplayerMode = urlParams.get("mode") === "mp" ||
                                   urlParams.has("mp") ||
                                   urlParams.has("joinCode");
@@ -11823,26 +11835,29 @@
          * moved to rank 0. Written to cod4/mods/unlockall/mp/
          */
         async function installUnlockAllMod() {
-            const URL =
+            const CSV_URL =
                 "https://raw.githubusercontent.com/Iker3329/kisakcod/main/assets/rankTable.csv";
+            const IWD_URL =
+                "https://raw.githubusercontent.com/Iker3329/kisakcod/main/assets/unlockall.iwd";
 
             if (!await hasInstalledGame()) {
                 status("Install the game first.");
                 return;
             }
 
-            status("Downloading unlock-all rankTable…");
-            log("[unlockall] fetching " + URL);
+            status("Downloading unlock-all mod…");
+            log("[unlockall] fetching rankTable + iwd");
 
-            let text;
+            let csvText;
+            let iwdBytes = null;
             try {
-                const res = await fetch(URL, { cache: "no-cache" });
-                if (!res.ok) throw new Error("HTTP " + res.status);
-                text = await res.text();
-                if (text.length < 100) {
+                const res = await fetch(CSV_URL, { cache: "no-cache" });
+                if (!res.ok) throw new Error("rankTable HTTP " + res.status);
+                csvText = await res.text();
+                if (csvText.length < 100) {
                     throw new Error("rankTable.csv too small");
                 }
-                log("[unlockall] downloaded " + text.length + " chars");
+                log("[unlockall] rankTable.csv " + csvText.length + " chars");
             } catch (err) {
                 status("unlock-all download failed: " + (err?.message || err));
                 log("ERROR unlockall: " + (err?.message || err));
@@ -11850,27 +11865,80 @@
             }
 
             try {
+                const res = await fetch(IWD_URL, { cache: "no-cache" });
+                if (res.ok) {
+                    iwdBytes = new Uint8Array(await res.arrayBuffer());
+                    log("[unlockall] unlockall.iwd " + iwdBytes.byteLength + " bytes");
+                } else {
+                    log("[unlockall] unlockall.iwd not on GitHub yet (" + res.status + ")");
+                }
+            } catch (e) {
+                log("[unlockall] iwd fetch skipped: " + (e?.message || e));
+            }
+
+            const csvBytes = new TextEncoder().encode(csvText);
+
+            async function writeModTree(cod4, modName) {
+                const base = "mods/" + modName;
+                await ensureOPFSDirectory(cod4, base + "/mp");
+                await writeBytesToOPFS(
+                    cod4,
+                    base + "/mp/rankTable.csv",
+                    csvBytes
+                );
+                log("[unlockall] wrote " + base + "/mp/rankTable.csv");
+                if (iwdBytes) {
+                    await writeBytesToOPFS(
+                        cod4,
+                        base + "/unlockall.iwd",
+                        iwdBytes
+                    );
+                    // Also as named iwd some loaders expect
+                    await writeBytesToOPFS(
+                        cod4,
+                        base + "/mod.iwd",
+                        iwdBytes
+                    );
+                    log("[unlockall] wrote " + base + "/*.iwd");
+                }
+            }
+
+            try {
                 const root = await navigator.storage.getDirectory();
                 const cod4 = await root.getDirectoryHandle("cod4", {
                     create: false
                 });
-                await ensureOPFSDirectory(cod4, "mods/unlockall/mp");
-                const bytes = new TextEncoder().encode(text);
-                await writeBytesToOPFS(
-                    cod4,
-                    "mods/unlockall/mp/rankTable.csv",
-                    bytes
-                );
+
+                // Standalone mod
+                await writeModTree(cod4, "unlockall");
+                // Merge into bots mod so fs_game mods/mp_bots still gets unlocks
+                await writeModTree(cod4, "mp_bots");
+
                 status(
-                    "Unlock-all mod installed at mods/unlockall. " +
-                    "Start multiplayer with fs_game mods/unlockall " +
-                    "(both players need it)."
+                    "Unlock-all installed into mods/unlockall and mods/mp_bots. " +
+                    "Use Launch unlock-all MP, or set fs_game to mods/unlockall or mods/mp_bots."
                 );
-                log("[unlockall] wrote mods/unlockall/mp/rankTable.csv");
             } catch (err) {
                 status("unlock-all install failed: " + (err?.message || err));
                 log("ERROR unlockall install: " + (err?.message || err));
             }
+        }
+
+        async function launchUnlockAllMP() {
+            // Prefer unlockall; bots users can use mp_bots after install merges CSV there
+            try {
+                sessionStorage.setItem("kisak_launch_fs_game", "mods/unlockall");
+                sessionStorage.setItem("kisak_auto_play", "1");
+            } catch (e) { }
+            window.__kisakFsGame = "mods/unlockall";
+            window.__kisakFsGameKeep = true;
+
+            const url = new URL(location.href);
+            url.searchParams.set("mode", "mp");
+            // engine may read fs_game from query on some builds
+            url.searchParams.set("fs_game", "mods/unlockall");
+            status("Launching multiplayer with fs_game mods/unlockall…");
+            location.href = url.toString();
         }
 
         const installUnlockAllModButton =
@@ -11878,6 +11946,14 @@
         if (installUnlockAllModButton) {
             installUnlockAllModButton.addEventListener("click", () => {
                 installUnlockAllMod();
+            });
+        }
+
+        const launchUnlockAllMpButton =
+            document.getElementById("launch-unlockall-mp-button");
+        if (launchUnlockAllMpButton) {
+            launchUnlockAllMpButton.addEventListener("click", () => {
+                launchUnlockAllMP();
             });
         }
 
