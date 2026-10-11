@@ -649,35 +649,19 @@
             <button id="import-maps-button" type="button">
                 Import Custom Maps
             </button>
-
-            <button id="import-rooftops-button" type="button">
-                Import Rooftops Mod
-            </button>
-
+            
             <button id="launch-rooftops-button" type="button">
-                Launch Rooftops
+                Launch bots mod
             </button>
 
             <button id="controller-defaults-button" type="button">
                 Controller default controls
             </button>
 
-            <button id="install-mpdata-button" type="button">
-                Install unlock stats (mpdata)
-            </button>
-
-            <button id="install-unlockall-mod-button" type="button">
-                Install unlock-all mod
-            </button>
-
-            <button id="launch-unlockall-mp-button" type="button">
-                Launch unlock-all MP
-            </button>
-
             <button id="reset-mods-button" type="button" class="danger">
                 Reset mods folder
             </button>
-
+            
 
             <input id="upload-save-input" type="file" accept=".dat,.zip" hidden>
 
@@ -11409,10 +11393,10 @@
         }
 
         /**
-         * Launch singleplayer with +set fs_game mods/Rooftops1.
+         * Launch singleplayer with +set fs_game mods/mp_bots.
          */
         async function launchRooftops() {
-            const FS_GAME = "mods/Rooftops1";
+            const FS_GAME = "mods/mp_bots";
             console.log("[kisak] Launch Rooftops clicked");
             status("Launch Rooftops: preparing…");
 
