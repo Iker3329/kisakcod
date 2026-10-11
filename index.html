@@ -21,7 +21,7 @@
         (function() {
             const p = new URLSearchParams(location.search);
             const mp = p.get("mode") === "mp" || p.has("mp") || p.has("joinCode");
-            const js  = mp ? "mp/kisakcod-mp.js?v=botsfs2"  : "kisakcod-sp.js";
+            const js  = mp ? "mp/kisakcod-mp.js"  : "kisakcod-sp.js";
             const wasm = mp ? "mp/kisakcod-mp.wasm" : "kisakcod-sp.wasm";
             const l1 = document.createElement("link");
             l1.rel = "preload"; l1.href = js; l1.as = "script";
@@ -753,10 +753,24 @@
         const urlParams = new URLSearchParams(location.search);
         try {
             const fsParam = urlParams.get("fs_game");
+            const joinParam = urlParams.get("joinCode");
+            const botsParam = urlParams.get("bots");
+            if (joinParam && !fsParam && botsParam !== "1") {
+                try {
+                    sessionStorage.removeItem("kisak_launch_fs_game");
+                    sessionStorage.removeItem("kisak_auto_play");
+                } catch (e) { }
+                try { delete window.__kisakFsGame; } catch (e) {
+                    window.__kisakFsGame = null;
+                }
+                window.__kisakFsGameKeep = false;
+            }
             if (fsParam && fsParam.trim()) {
-                sessionStorage.setItem("kisak_launch_fs_game", fsParam.trim());
-                window.__kisakFsGame = fsParam.trim();
-                try { window.__kisakFsGameKeep = true; } catch (e2) { }
+                let v = fsParam.trim();
+                if (v.toLowerCase().indexOf("mods/") !== 0) v = "mods/" + v;
+                sessionStorage.setItem("kisak_launch_fs_game", v);
+                window.__kisakFsGame = v;
+                window.__kisakFsGameKeep = true;
             }
         } catch (e) { }
 
@@ -764,7 +778,7 @@
                                   urlParams.has("mp") ||
                                   urlParams.has("joinCode");
 
-        const ENGINE_JS  = isMultiplayerMode ? "mp/kisakcod-mp.js?v=botsfs2"  : "kisakcod-sp.js";
+        const ENGINE_JS  = isMultiplayerMode ? "mp/kisakcod-mp.js"  : "kisakcod-sp.js";
         const ENGINE_WASM = isMultiplayerMode ? "mp/kisakcod-mp.wasm" : "kisakcod-sp.wasm";
 
         if (isMultiplayerMode) {
@@ -4610,31 +4624,19 @@
                         "+set", "sv_pure", "0"
                     );
                 }
-                // fs_game (bots mod / rooftops / etc). Prefer URL, then
-                // sessionStorage, so a fresh MP boot always sees the mod.
                 try {
                     let fs = null;
-                    try {
-                        fs = new URLSearchParams(location.search).get("fs_game");
-                    } catch (e) { }
+                    try { fs = new URLSearchParams(location.search).get("fs_game"); } catch (e) { }
                     if (!fs) {
-                        try {
-                            fs = sessionStorage.getItem("kisak_launch_fs_game");
-                        } catch (e) { }
+                        try { fs = sessionStorage.getItem("kisak_launch_fs_game"); } catch (e) { }
                     }
                     if (!fs && window.__kisakFsGame) fs = window.__kisakFsGame;
                     if (fs && typeof fs === "string" && fs.trim()) {
                         let v = fs.trim();
-                        // COD-style: fs_game is "mods/modname"
-                        if (!v.toLowerCase().startsWith("mods/") && !v.toLowerCase().startsWith("mods\\")) {
-                            v = "mods/" + v;
-                        }
+                        if (v.toLowerCase().indexOf("mods/") !== 0) v = "mods/" + v;
                         window.__kisakFsGame = v;
-                        try {
-                            sessionStorage.setItem("kisak_launch_fs_game", v);
-                        } catch (e) { }
+                        try { sessionStorage.setItem("kisak_launch_fs_game", v); } catch (e) { }
                         args.unshift("+set", "fs_game", v);
-                        try { Module.__kisakFsGame = v; } catch (e) { }
                         console.log("[kisak] Module.arguments fs_game =", v);
                     }
                 } catch (e) { }
@@ -4654,9 +4656,8 @@
             // Users can still override via localStorage key kisak_relays_v1
             // (same store the original multiplayer page used).
             kisakLanUrl: (function () {
-                const OFFICIAL =
-                    "wss://mw.slqnt.dev/lan?v=1";
-                let base = OFFICIAL;
+                // Official relay (slqnt). Always default here so invites work.
+                let base = "wss://mw.slqnt.dev/lan?v=1";
                 try {
                     const raw = localStorage.getItem("kisak_relays_v1");
                     if (raw) {
@@ -4665,23 +4666,24 @@
                             store && typeof store.selected === "string"
                                 ? store.selected.trim()
                                 : "";
+                        // Only accept a custom relay if it looks like a lan WS URL.
                         if (
                             selected &&
-                            /^wss?:\/\//i.test(selected)
+                            /^wss?:\/\//i.test(selected) &&
+                            /\/lan/i.test(selected)
                         ) {
                             base = selected;
                         }
                     }
                 } catch (e) { }
-                // Append joinCode when present (same as original mp page).
                 try {
-                    const jc = new URLSearchParams(location.search)
-                        .get("joinCode");
+                    const jc = new URLSearchParams(location.search).get("joinCode");
                     if (jc) {
                         base += (base.indexOf("?") >= 0 ? "&" : "?") +
                             "joinCode=" + encodeURIComponent(jc);
                     }
                 } catch (e) { }
+                console.log("[kisak] Module.kisakLanUrl =", base);
                 return base;
             })(),
 
@@ -9735,13 +9737,9 @@
                     fsGame = window.__kisakFsGame;
                 }
                 if (fsGame && String(fsGame).trim()) {
-                    let v = String(fsGame).trim();
-                    if (!v.toLowerCase().startsWith("mods/") && !v.toLowerCase().startsWith("mods\\")) {
-                        v = "mods/" + v;
-                    }
+                    const v = String(fsGame).trim();
                     window.__kisakFsGame = v;
                     arr.push("+set", "fs_game", v);
-                    console.log("[kisak] applyLanguageArgs fs_game =", v);
                 }
 
             }
@@ -11428,7 +11426,6 @@
                 return;
             }
 
-            // Persist so the MP boot picks up fs_game.
             try {
                 sessionStorage.setItem("kisak_launch_fs_game", FS_GAME);
                 sessionStorage.setItem("kisak_auto_play", "1");
@@ -11440,44 +11437,18 @@
             window.__kisakFsGame = FS_GAME;
             window.__kisakFsGameKeep = true;
 
-            // In-place update if the engine already holds the array.
-            try {
-                const arr = getEngineArgsArray();
-                if (arr) {
-                    for (let i = arr.length - 2; i >= 0; i--) {
-                        if (arr[i] === "+set" && arr[i + 1] === "fs_game") {
-                            arr.splice(i, 3);
-                        }
-                    }
-                    arr.push("+set", "fs_game", FS_GAME);
-                    console.log("[kisak] launch args:", arr.slice());
-                } else {
-                    console.log("[kisak] launch args: (no array yet) will apply on reload");
-                }
-            } catch (e) {
-                console.warn("[kisak] args mutate failed", e);
-            }
-
             status("Launching bots mod (MP, fs_game " + FS_GAME + ")…");
             log("Launch bots mod with +set fs_game " + FS_GAME + " (multiplayer)");
 
-            // Always force a real navigation/reload so the MP engine boots
-            // with a fresh programArgs / kisak_launch_args (same URL alone
-            // would not reload if we are already on mode=mp).
-            const fsQ =
-                encodeURIComponent(FS_GAME).replace(/%2F/gi, "/");
+            const fsQ = encodeURIComponent(FS_GAME).replace(/%2F/gi, "/");
             const target =
                 location.pathname +
                 "?mode=mp&fs_game=" + fsQ +
                 "&bots=1&t=" + Date.now() +
                 (location.hash || "");
-            console.log("[kisak] navigating to", target, "fs_game=", FS_GAME);
+            console.log("[kisak] navigating to", target);
 
-            if (
-                isMultiplayerMode &&
-                location.pathname === new URL(target, location.href).pathname
-            ) {
-                // Already on this page: assign then reload to guarantee boot.
+            if (isMultiplayerMode) {
                 history.replaceState(null, "", target);
                 location.reload();
                 return;
@@ -11512,33 +11483,13 @@
                 }
             } catch (e) { }
 
-            // Force fs_game onto Module.arguments before the engine can boot
-            // without it (programArgs is fixed at glue evaluation).
-            try {
-                if (typeof Module !== "undefined" && Module) {
-                    if (!Array.isArray(Module.arguments)) {
-                        Module.arguments = [];
-                    }
-                    const arr = Module.arguments;
-                    for (let i = arr.length - 2; i >= 0; i--) {
-                        if (arr[i] === "+set" && arr[i + 1] === "fs_game") {
-                            arr.splice(i, 3);
-                        }
-                    }
-                    arr.push("+set", "fs_game", fs);
-                    console.log("[kisak] forced Module.arguments", arr.slice());
-                }
-            } catch (e) {
-                console.warn("[kisak] could not force Module.arguments", e);
-            }
-
             console.log(
-                "[kisak] auto-play bots mod with fs_game",
+                "[kisak] auto-play Rooftops with fs_game",
                 fs,
                 "args=",
                 getEngineArgsArray() && getEngineArgsArray().slice()
             );
-            status("Auto-starting bots mod (fs_game " + fs + ")…");
+            status("Auto-starting Rooftops (fs_game " + fs + ")…");
 
             // Wait until OPFS ready and play enabled.
             for (let i = 0; i < 80; i++) {
@@ -13893,85 +13844,85 @@
             window.__kisakOpfsReady =
                 installCheckInstalled;
 
+            // Build a fresh <script> every time. The template's own node is
+            // moved into the document on the first injection, so after that
+            // (or after resetGameEngine()) the template no longer holds one
+            // and querySelector("script") returns null.
             const gameScript =
                 document.createElement("script");
 
             gameScript.async = true;
 
-            const appended = new Promise((resolve) => {
-                gameScript.addEventListener(
-                    "load",
-                    resolve,
-                    { once: true }
-                );
-                setTimeout(resolve, 30000);
-            });
-
-            // Patch the wasm import table before the engine instantiates, so
-            // the OPFS writers it captures report success correctly.
-            installWasmfsResultFix();
-
-            /*
-             * Multiplayer: fetch the glue as text, force kisak_launch_args()
-             * to always emit +set fs_game <mod>, then inject via blob URL.
-             * This bypasses cache and the engine's picky URL validation.
-             */
+            // Pin official relay (or user-selected) on Module before glue runs.
             if (isMultiplayerMode) {
-                const srcUrl = new URL(
-                    ENGINE_SCRIPT_SRC.replace(/\?.*$/, ""),
-                    location.href
-                );
-                // Strip query from path for fetch; cache-bust separately
-                const fetchUrl =
-                    srcUrl.pathname +
-                    "?v=botsforce3&t=" +
-                    Date.now();
+                try {
+                    const OFFICIAL = "wss://mw.slqnt.dev/lan?v=1";
+                    let relay = OFFICIAL;
+                    try {
+                        const raw = localStorage.getItem("kisak_relays_v1");
+                        if (raw) {
+                            const store = JSON.parse(raw);
+                            const selected =
+                                store && typeof store.selected === "string"
+                                    ? store.selected.trim() : "";
+                            if (selected && /^wss?:\/\//i.test(selected) &&
+                                /\/lan/i.test(selected)) {
+                                relay = selected;
+                            }
+                        }
+                    } catch (e) { }
+                    try {
+                        const jc = new URLSearchParams(location.search).get("joinCode");
+                        if (jc) {
+                            relay += (relay.indexOf("?") >= 0 ? "&" : "?") +
+                                "joinCode=" + encodeURIComponent(jc);
+                        }
+                    } catch (e) { }
+                    Module.kisakLanUrl = relay;
+                    console.log("[kisak] relay =", relay);
+                } catch (e) {
+                    console.warn("[kisak] relay setup failed", e);
+                }
+            }
 
+            // Blob-patch glue ONLY when launching with fs_game (bots mod).
+            // Vanilla MP uses the normal script tag so invites/relay work.
+            let needFsPatch = false;
+            if (isMultiplayerMode) {
+                try {
+                    const fs =
+                        sessionStorage.getItem("kisak_launch_fs_game") ||
+                        new URLSearchParams(location.search).get("fs_game") ||
+                        window.__kisakFsGame || "";
+                    needFsPatch = !!(fs && String(fs).trim());
+                } catch (e) { }
+            }
+
+            if (isMultiplayerMode && needFsPatch) {
+                const fetchUrl =
+                    new URL("mp/kisakcod-mp.js", location.href).pathname +
+                    "?v=botsbake1&t=" + Date.now();
                 let code = null;
                 try {
                     const resp = await fetch(fetchUrl, { cache: "no-store" });
-                    if (!resp.ok) {
-                        throw new Error("HTTP " + resp.status);
-                    }
+                    if (!resp.ok) throw new Error("HTTP " + resp.status);
                     code = await resp.text();
                 } catch (err) {
-                    console.warn(
-                        "[kisak] could not fetch MP glue for patch:",
-                        err
-                    );
+                    console.warn("[kisak] MP glue fetch failed:", err);
                 }
-
                 if (code && code.indexOf("function kisak_launch_args") >= 0) {
-                    // Bake fs_game into the function source NOW (main thread),
-                    // because kisak_launch_args is later called on a worker
-                    // where sessionStorage and location.search are empty.
-                    let bakedFs = null;
+                    let bakedFs = "";
                     try {
-                        bakedFs = sessionStorage.getItem("kisak_launch_fs_game");
+                        bakedFs =
+                            sessionStorage.getItem("kisak_launch_fs_game") ||
+                            new URLSearchParams(location.search).get("fs_game") ||
+                            window.__kisakFsGame || "";
                     } catch (e) { }
-                    if (!bakedFs) {
-                        try {
-                            bakedFs = new URLSearchParams(location.search).get("fs_game");
-                        } catch (e) { }
-                    }
-                    if (!bakedFs) {
-                        try {
-                            bakedFs = window.__kisakFsGame || null;
-                        } catch (e) { }
-                    }
-                    if (bakedFs) {
-                        bakedFs = String(bakedFs).trim();
-                        if (
-                            bakedFs &&
-                            bakedFs.toLowerCase().indexOf("mods/") !== 0
-                        ) {
-                            bakedFs = "mods/" + bakedFs;
-                        }
-                    } else {
-                        bakedFs = "";
+                    bakedFs = String(bakedFs || "").trim();
+                    if (bakedFs && bakedFs.toLowerCase().indexOf("mods/") !== 0) {
+                        bakedFs = "mods/" + bakedFs;
                     }
                     console.log("[kisak] baking fs_game into glue:", bakedFs || "(none)");
-
                     const forceFn =
                         "function kisak_launch_args(){" +
                         "var f=" + JSON.stringify(bakedFs) + ";" +
@@ -13983,54 +13934,92 @@
                         "return stringToUTF8(e,U,N),U;" +
                         "}catch(err){console.error('[kisak] launch_args error',err);return 0;}" +
                         "}";
-
                     const re = /function kisak_launch_args\(\)\{[\s\S]*?\}function kisak_bench_text/;
                     if (re.test(code)) {
                         code = code.replace(re, forceFn + "function kisak_bench_text");
-                        console.log("[kisak] patched kisak_launch_args into MP glue");
-                    } else {
-                        console.warn("[kisak] kisak_launch_args pattern not found");
+                        console.log("[kisak] patched kisak_launch_args");
                     }
-
-                    // programArgs on main thread (also bake)
                     const needle = "Module.arguments&&(programArgs=Module.arguments)";
-                    if (code.indexOf(needle) >= 0) {
+                    if (code.indexOf(needle) >= 0 && bakedFs) {
                         const inject =
                             needle +
                             ",(function(){try{" +
                             "var f=" + JSON.stringify(bakedFs) + ";" +
                             "if(!Array.isArray(programArgs))programArgs=[];" +
                             "for(var i=programArgs.length-2;i>=0;i--){" +
-                            "if(programArgs[i]==='+set'&&programArgs[i+1]==='fs_game')programArgs.splice(i,3);" +
-                            "}" +
-                            "if(f){programArgs.unshift('+set','fs_game',f);" +
-                            "console.log('[kisak] programArgs FORCED',programArgs.slice());}" +
-                            "}catch(x){console.warn('[kisak] programArgs force failed',x);}})()";
+                            "if(programArgs[i]==='+set'&&programArgs[i+1]==='fs_game')programArgs.splice(i,3);}" +
+                            "programArgs.unshift('+set','fs_game',f);" +
+                            "console.log('[kisak] programArgs FORCED',programArgs.slice());" +
+                            "}catch(x){}})()";
                         code = code.replace(needle, inject);
-                        console.log("[kisak] patched programArgs force");
                     }
-
-                    code = code.replace(
-                        "async function run(e=programArgs){",
-                        "async function run(e=programArgs){console.log('[kisak] run() args',e);"
+                    try {
+                        const OFFICIAL = "wss://mw.slqnt.dev/lan?v=1";
+                        let relay = OFFICIAL;
+                        try {
+                            if (typeof Module !== "undefined" && Module &&
+                                Module.kisakLanUrl) {
+                                relay = Module.kisakLanUrl;
+                            }
+                        } catch (e) { }
+                        try {
+                            if (typeof Module !== "undefined" && Module) {
+                                Module.kisakLanUrl = relay;
+                            }
+                        } catch (e) { }
+                        // Glue may run before Module is bound in this scope —
+                        // create/assign safely on window.
+                        code =
+                            "(function(){try{" +
+                            "var M=(typeof Module!=='undefined'&&Module)" +
+                            "?(Module):(window.Module=window.Module||{});" +
+                            "M.kisakLanUrl=" + JSON.stringify(relay) + ";" +
+                            "if(typeof Module==='undefined'||!Module)" +
+                            "{window.Module=M;}" +
+                            "console.log('[kisak] glue relay',M.kisakLanUrl);" +
+                            "}catch(e){console.warn('[kisak] relay bake',e);}})();" +
+                            code;
+                    } catch (e) {
+                        console.warn("[kisak] relay bake failed", e);
+                    }
+                    gameScript.src = URL.createObjectURL(
+                        new Blob([code], { type: "text/javascript" })
                     );
-
-                    const blob = new Blob([code], {
-                        type: "text/javascript",
-                    });
-                    gameScript.src = URL.createObjectURL(blob);
                 } else {
-                    // Fallback: normal script tag
-                    const fallback = new URL(
-                        ENGINE_SCRIPT_SRC,
-                        location.href
-                    );
-                    fallback.searchParams.set("kisakLan", Module.kisakLanUrl || "");
-                    gameScript.src = fallback.href;
+                    const srcUrl = new URL("mp/kisakcod-mp.js", location.href);
+                    srcUrl.searchParams.set("kisakLan", Module.kisakLanUrl || "");
+                    gameScript.src = srcUrl.href;
                 }
+            } else if (isMultiplayerMode) {
+                const srcUrl = new URL("mp/kisakcod-mp.js", location.href);
+                for (const key of ["joinCode", "devmap", "ben", "bench",
+                                   "benchcmd", "benchdelay", "addbots"]) {
+                    const val = urlParams.get(key);
+                    if (val !== null) srcUrl.searchParams.set(key, val);
+                }
+                srcUrl.searchParams.set("kisakLan", Module.kisakLanUrl || "");
+                gameScript.src = srcUrl.href;
+                console.log("[kisak] MP vanilla (relay path)", srcUrl.href);
             } else {
                 gameScript.src = ENGINE_SCRIPT_SRC;
             }
+
+            const appended = new Promise((resolve) => {
+                gameScript.addEventListener(
+                    "load",
+                    resolve,
+                    { once: true }
+                );
+
+                // Never strand the caller if the load event is missed.
+                setTimeout(resolve, 30000);
+            });
+
+
+            // Patch the wasm import table before the engine instantiates, so
+            // the OPFS writers it captures report success correctly.
+            installWasmfsResultFix();
+
 
             document.body.appendChild(
                 gameScript
@@ -14189,7 +14178,6 @@
 
                 }
 
-                // Clear bots-mod launch flags so normal MP is vanilla.
                 try {
                     sessionStorage.removeItem("kisak_launch_fs_game");
                     sessionStorage.removeItem("kisak_auto_play");
@@ -14202,6 +14190,7 @@
                 const url = new URL(location.href);
                 url.searchParams.set("mode", "mp");
                 url.searchParams.delete("fs_game");
+                url.searchParams.delete("bots");
                 url.searchParams.delete("joinCode");
                 location.href = url.toString();
 
